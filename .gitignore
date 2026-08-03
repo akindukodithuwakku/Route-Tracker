@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environments
+.venv/
+venv/
+
+# PyInstaller build output (regenerate with the commands in docs/SETUP.md)
+build/
+dist/
+*.spec
+
+# Built installers (large binaries -- distribute via GitHub Releases instead)
+release/*.exe
+
+# Per-machine runtime state -- generated on first run, contains secrets
+manager/config/clients.json
+manager/config/server.json
+manager/certs/
+manager/data/
+client_agent/config.json
+client_agent/data/
+client_agent/logs/
+client_agent/cert.pem
+
+# Logs
+*.log
+
+# Claude Code local session settings (personal, not shared)
+.claude/settings.local.json

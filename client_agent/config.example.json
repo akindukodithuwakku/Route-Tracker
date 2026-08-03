@@ -1,0 +1,9 @@
+{
+  "client_id": "pc1",
+  "api_key": "PASTE_THE_MATCHING_API_KEY_FROM_manager/config/clients.json",
+  "manager_url": "https://192.168.1.10:8443/api/report",
+  "verify_ssl": true,
+  "ca_cert_path": "",
+  "report_interval_seconds": 30,
+  "exclude_remote_ports": [8443]
+}

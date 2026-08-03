@@ -1,0 +1,4 @@
+requests==2.32.3
+psutil==6.0.0
+pydivert==2.1.0
+pywin32==306
