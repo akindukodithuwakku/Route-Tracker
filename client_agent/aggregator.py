@@ -59,22 +59,43 @@ class Aggregator:
             flow.bytes_received += nbytes
         flow.last_seen = now
 
-        if domain and not flow.domain_resolved:
-            flow.domain = domain
-            flow.domain_resolved = True
+        if domain:
+            # Allow upgrading a temporary IP label to a real hostname if DNS
+            # snooping/PTR lands after the first packets of the flow.
+            if not flow.domain_resolved or self._is_ip(flow.domain):
+                flow.domain = domain
+                flow.domain_resolved = not self._is_ip(domain)
         if process_name and not flow.process_name:
             flow.process_name = process_name
 
     def resolve_pending(self, flow_key: FlowKey, domain: str):
-        """Called once an async reverse-DNS lookup completes for a flow that
-        had no SNI/Host domain at packet time."""
+        """Called once an async DNS lookup completes for a flow that had no
+        SNI/Host domain at packet time. Ignores results that are still IPs."""
+        if not domain or self._is_ip(domain):
+            return
         flow = self._flows.get(flow_key)
-        if flow and not flow.domain_resolved:
+        if flow and (not flow.domain_resolved or self._is_ip(flow.domain)):
             flow.domain = domain
             flow.domain_resolved = True
 
     def unresolved_flows(self):
-        return [k for k, f in self._flows.items() if not f.domain_resolved]
+        return [
+            k
+            for k, f in self._flows.items()
+            if not f.domain_resolved or self._is_ip(f.domain)
+        ]
+
+    @staticmethod
+    def _is_ip(value):
+        if not value:
+            return False
+        try:
+            import ipaddress
+
+            ipaddress.ip_address(value)
+            return True
+        except ValueError:
+            return False
 
     def flush(self, now: float = None) -> list:
         """Emit one UsageRecord per (domain, process) grouping seen since the

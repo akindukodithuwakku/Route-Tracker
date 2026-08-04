@@ -136,10 +136,11 @@ py -m venv .venv
 
 - **QUIC (HTTP/3) traffic**, used by some Chrome/YouTube/Google connections
   over UDP port 443, doesn't expose SNI the same way TCP TLS does. That
-  traffic is still counted for bandwidth but attributed by reverse-DNS of
-  the destination IP (or shown as a bare IP if reverse-DNS has no record)
-  rather than a clean domain name. Most sites still fall back to/also use
-  regular TCP, so this mainly affects precision, not totals.
+  traffic is still counted for bandwidth and attributed from DNS answers
+  snooped on the PC (free, local) or reverse-DNS of the destination IP, or
+  shown as a bare IP if neither has a name. DNS-over-HTTPS/TLS lookups are
+  not visible on port 53, so those flows may stay as IPs/PTR names. Most
+  sites still fall back to/also use regular TCP + classic DNS.
 - **Process attribution** (which app made the connection) is best-effort:
   the OS connection table is sampled every ~2s rather than per-packet, so
   very short-lived connections may show no process name.

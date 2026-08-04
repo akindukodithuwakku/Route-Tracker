@@ -8,9 +8,11 @@ Requires:
   - Administrator / LocalSystem privileges (the Windows Service runs as
     LocalSystem, which covers this)
 
-QUIC (HTTP/3 over UDP 443) traffic is counted for bandwidth but its domain
-cannot be read the same way TLS-over-TCP can; it gets the reverse-DNS
-fallback like any other unresolved flow.
+Domain attribution (cheapest → best effort):
+  1. TLS SNI / HTTP Host from the cleartext handshake
+  2. Forward names learned by snooping local DNS responses (UDP/53) -- free,
+     and usually the real hostname the app asked for
+  3. Reverse-DNS PTR via the OS resolver (free; often missing for CDNs)
 """
 
 import ipaddress
@@ -20,14 +22,15 @@ import time
 import pydivert
 
 from aggregator import Aggregator, FlowKey
-from dns_cache import reverse_dns
+from dns_cache import learn_from_dns_payload, lookup, peek_forward
 from process_lookup import ProcessLookup
 import sni as sni_parser
 
 # Only inspect these ports for cleartext-domain hints; everything else still
-# gets counted for bandwidth, just attributed by IP/reverse-DNS.
+# gets counted for bandwidth, just attributed by IP / DNS cache / reverse-DNS.
 _TLS_PORTS = {443}
 _HTTP_PORTS = {80}
+_DNS_PORTS = {53}
 
 _RDNS_WORKERS = 4
 
@@ -37,6 +40,14 @@ def _is_private(ip: str) -> bool:
         return ipaddress.ip_address(ip).is_private
     except ValueError:
         return True
+
+
+def _looks_like_ip(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
 
 
 _EXCLUDED_FLOW_TTL = 300.0  # bound how long a resolved-excluded flow is remembered
@@ -59,6 +70,7 @@ class CaptureEngine:
         self._process_lookup = ProcessLookup()
         self._stop = threading.Event()
         self._rdns_queue = []
+        self._rdns_pending = set()  # remote_ips already queued
         self._rdns_lock = threading.Lock()
         # A flow's domain is only known once its ClientHello/Host is parsed,
         # so once we recognize one as excluded we remember it by flow_key --
@@ -69,6 +81,13 @@ class CaptureEngine:
         proto = "tcp" if packet.tcp else ("udp" if packet.udp else None)
         if proto is None:
             return
+
+        # Learn IP→name from DNS answers (any direction, UDP/53). Free and
+        # usually better than reverse-DNS for the sites users actually visit.
+        if packet.udp and (packet.src_port in _DNS_PORTS or packet.dst_port in _DNS_PORTS):
+            payload = packet.udp.payload or b""
+            if payload:
+                learn_from_dns_payload(payload)
 
         local_ip = packet.src_addr if packet.is_outbound else packet.dst_addr
         local_port = packet.src_port if packet.is_outbound else packet.dst_port
@@ -92,6 +111,11 @@ class CaptureEngine:
             elif remote_port in _HTTP_PORTS:
                 domain = sni_parser.parse_http_host(payload)
 
+        # Cheap synchronous cache hit from earlier DNS snooping (no I/O).
+        # Public IPs may also get a PTR later via the background workers.
+        if domain is None:
+            domain = peek_forward(remote_ip)
+
         if domain and domain in self._exclude_domains:
             self._excluded_flows[flow_key] = now
             return
@@ -105,23 +129,45 @@ class CaptureEngine:
 
         self._aggregator.on_packet(flow_key, direction, nbytes, domain=domain, process_name=process_name)
 
+        # Queue a reverse-DNS attempt only when we still have no real name.
         if domain is None and not _is_private(remote_ip):
             with self._rdns_lock:
-                self._rdns_queue.append(flow_key)
+                if remote_ip not in self._rdns_pending:
+                    self._rdns_pending.add(remote_ip)
+                    self._rdns_queue.append(flow_key)
 
     def _rdns_worker(self):
         while not self._stop.is_set():
             with self._rdns_lock:
                 batch, self._rdns_queue = self._rdns_queue, []
+            seen_ips = set()
             for flow_key in batch:
-                if flow_key not in self._aggregator.unresolved_flows():
+                if flow_key.remote_ip in seen_ips:
                     continue
-                name = reverse_dns(flow_key.remote_ip)
-                self._aggregator.resolve_pending(flow_key, name)
+                seen_ips.add(flow_key.remote_ip)
+                if flow_key not in self._aggregator.unresolved_flows():
+                    with self._rdns_lock:
+                        self._rdns_pending.discard(flow_key.remote_ip)
+                    continue
+                name = lookup(flow_key.remote_ip)
+                if name and not _looks_like_ip(name):
+                    # Apply the name to every open flow for this IP.
+                    for pending in self._aggregator.unresolved_flows():
+                        if pending.remote_ip == flow_key.remote_ip:
+                            self._aggregator.resolve_pending(pending, name)
+                with self._rdns_lock:
+                    self._rdns_pending.discard(flow_key.remote_ip)
             self._stop.wait(2.0)
 
     def _flush_loop(self):
         while not self._stop.wait(self._flush_interval):
+            # Last-chance: attach any names learned since the last flush
+            # before we emit IP-keyed buckets.
+            for flow_key in self._aggregator.unresolved_flows():
+                name = lookup(flow_key.remote_ip)
+                if name and not _looks_like_ip(name):
+                    self._aggregator.resolve_pending(flow_key, name)
+
             records = self._aggregator.flush()
             if records and self._on_flush:
                 self._on_flush(records)
@@ -138,7 +184,8 @@ class CaptureEngine:
         # fail with WinError 87 (ERROR_INVALID_PARAMETER). Capture all
         # TCP/UDP and skip private/loopback attribution in _handle_packet.
         wd_filter = "tcp or udp"
-        threading.Thread(target=self._rdns_worker, daemon=True).start()
+        for _ in range(_RDNS_WORKERS):
+            threading.Thread(target=self._rdns_worker, daemon=True).start()
         threading.Thread(target=self._flush_loop, daemon=True).start()
 
         with pydivert.WinDivert(wd_filter, layer=pydivert.Layer.NETWORK) as w:
