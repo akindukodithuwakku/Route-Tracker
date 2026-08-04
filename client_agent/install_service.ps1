@@ -1,11 +1,13 @@
 <#
-Installs the client agent as an always-on Windows Service.
+Installs the client agent as an always-on Windows Service, running from
+source (Python) instead of the prebuilt ClientAgentSetup.exe.
 Run this ON EACH CLIENT PC, from an elevated (Run as Administrator) PowerShell.
 
 Before running: copy config.example.json to config.json and fill in
-client_id / api_key (from the manager's config\clients.json) and manager_url.
-If the manager is using a self-signed cert, also copy its cert.pem into this
-folder and set ca_cert_path in config.json to its path.
+cloud_base_url / enrollment_token -- both printed together by
+scripts/setup-project.js and identical on every PC (see docs/SETUP.md).
+There is no per-PC id or key to configure; the agent enrolls itself using
+this PC's own hostname on first run.
 
 What it does:
   1. Creates a venv and installs requirements.txt
@@ -24,11 +26,11 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 }
 
 if (-not (Test-Path ".\config.json")) {
-    Write-Error "config.json not found. Copy config.example.json to config.json and fill in client_id/api_key/manager_url first."
+    Write-Error "config.json not found. Copy config.example.json to config.json and fill in cloud_base_url/enrollment_token first."
     exit 1
 }
 $cfg = Get-Content ".\config.json" | ConvertFrom-Json
-if ($cfg.api_key -eq "PASTE_THE_MATCHING_API_KEY_FROM_manager/config/clients.json") {
+if ($cfg.enrollment_token -eq "REPLACE_ME_WITH_TOKEN_FROM_SETUP_SCRIPT") {
     Write-Error "config.json still has placeholder values. Edit it first."
     exit 1
 }

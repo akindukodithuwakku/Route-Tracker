@@ -1,13 +1,17 @@
 """
-"LAN Usage Monitor - Agent Setup" -- a self-contained installer GUI.
+"Route Tracker - Agent Setup" -- a self-contained installer GUI.
 
 Built by PyInstaller into a single ClientAgentSetup.exe that embeds the
 whole agent payload (LanUsageMonitorAgent.exe + its files, including the
 bundled WinDivert driver) as data. When the user double-clicks it, this
 script:
   1. Relaunches itself elevated (UAC prompt) if not already admin
-  2. Asks for the manager's address, this PC's client_id + API key (from the
-     manager's config\\clients.json), and optionally the manager's cert.pem
+  2. Asks for exactly two values -- the cloud endpoint URL and the shared
+     enrollment token, both printed together by scripts/setup-project.js and
+     identical on every PC. There is nothing else to configure: the agent
+     self-enrolls using this PC's own hostname on first run (see
+     enrollment.py) and gets its own device_id/device_key from the cloud,
+     so no per-PC id/key pair needs to be typed in here.
   3. Copies the payload into place and writes config.json
   4. Registers + starts the Windows Service and configures auto-restart
 
@@ -26,9 +30,9 @@ import winreg
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext
 
-APP_NAME = "LAN Usage Monitor - Agent"
+APP_NAME = "Route Tracker - Agent"
 SERVICE_NAME = "LanUsageMonitorAgent"
-DEFAULT_INSTALL_DIR = r"C:\Program Files\LAN Usage Monitor\Agent"
+DEFAULT_INSTALL_DIR = r"C:\Program Files\Route Tracker\Agent"
 UNINSTALL_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\LanUsageMonitorAgent"
 
 
@@ -56,65 +60,51 @@ class InstallerApp:
     def __init__(self, root):
         self.root = root
         root.title(f"{APP_NAME} Setup")
-        root.geometry("560x540")
+        root.geometry("560x460")
         root.resizable(False, False)
 
         tk.Label(root, text=APP_NAME, font=("Segoe UI", 14, "bold")).pack(pady=(16, 4))
         tk.Label(
             root,
             text="Installs the agent that reports this PC's internet usage\n"
-                 "to your manager PC's dashboard. You'll need the manager's\n"
-                 "address and this PC's client_id/api_key from the manager.",
+                 "to your Route Tracker dashboard. Paste the two values shown\n"
+                 "by the setup script -- they're the same on every PC.",
             justify="center",
-        ).pack(pady=(0, 12))
+        ).pack(pady=(0, 14))
 
         form = tk.Frame(root)
         form.pack(fill="x", padx=24)
 
-        tk.Label(form, text="Install to:").grid(row=0, column=0, sticky="w", pady=4)
+        tk.Label(form, text="Cloud endpoint URL:").grid(row=0, column=0, sticky="w", pady=4)
+        self.cloud_url = tk.StringVar(value="")
+        tk.Entry(form, textvariable=self.cloud_url, width=46).grid(row=0, column=1, sticky="w")
+
+        tk.Label(form, text="Enrollment token:").grid(row=1, column=0, sticky="w", pady=4)
+        self.token = tk.StringVar(value="")
+        tk.Entry(form, textvariable=self.token, width=46).grid(row=1, column=1, sticky="w")
+
+        tk.Label(form, text="Install to:").grid(row=2, column=0, sticky="w", pady=4)
         self.install_dir = tk.StringVar(value=DEFAULT_INSTALL_DIR)
-        tk.Entry(form, textvariable=self.install_dir, width=40).grid(row=0, column=1, sticky="w")
-        tk.Button(form, text="Browse...", command=self._browse_dir).grid(row=0, column=2, padx=6)
-
-        tk.Label(form, text="Manager address (host:port):").grid(row=1, column=0, sticky="w", pady=4)
-        self.manager_addr = tk.StringVar(value="192.168.1.10:8443")
-        tk.Entry(form, textvariable=self.manager_addr, width=40).grid(row=1, column=1, sticky="w", columnspan=2)
-
-        tk.Label(form, text="Client ID:").grid(row=2, column=0, sticky="w", pady=4)
-        self.client_id = tk.StringVar(value="pc1")
-        tk.Entry(form, textvariable=self.client_id, width=40).grid(row=2, column=1, sticky="w", columnspan=2)
-
-        tk.Label(form, text="API key:").grid(row=3, column=0, sticky="w", pady=4)
-        self.api_key = tk.StringVar(value="")
-        tk.Entry(form, textvariable=self.api_key, width=40).grid(row=3, column=1, sticky="w", columnspan=2)
-
-        tk.Label(form, text="Manager cert.pem (optional):").grid(row=4, column=0, sticky="w", pady=4)
-        self.cert_path = tk.StringVar(value="")
-        tk.Entry(form, textvariable=self.cert_path, width=40).grid(row=4, column=1, sticky="w")
-        tk.Button(form, text="Browse...", command=self._browse_cert).grid(row=4, column=2, padx=6)
+        tk.Entry(form, textvariable=self.install_dir, width=38).grid(row=2, column=1, sticky="w")
+        tk.Button(form, text="Browse...", command=self._browse_dir).grid(row=2, column=2, padx=6)
 
         tk.Label(
             root,
-            text="If you skip the cert, the agent will still connect but won't verify the\n"
-                 "manager's identity -- fine on a trusted LAN, not recommended otherwise.",
+            text="This PC will appear on the dashboard by itself within a few\n"
+                 "minutes of installing -- nothing to configure on the dashboard side.",
             fg="#666", font=("Segoe UI", 8), justify="center",
-        ).pack(pady=(4, 0))
+        ).pack(pady=(10, 0))
 
         self.install_btn = tk.Button(root, text="Install", width=16, command=self._start_install)
         self.install_btn.pack(pady=12)
 
-        self.log = scrolledtext.ScrolledText(root, height=12, state="disabled", font=("Consolas", 9))
+        self.log = scrolledtext.ScrolledText(root, height=11, state="disabled", font=("Consolas", 9))
         self.log.pack(fill="both", expand=True, padx=24, pady=(0, 16))
 
     def _browse_dir(self):
         chosen = filedialog.askdirectory()
         if chosen:
-            self.install_dir.set(str(Path(chosen) / "LAN Usage Monitor" / "Agent"))
-
-    def _browse_cert(self):
-        chosen = filedialog.askopenfilename(filetypes=[("PEM certificate", "*.pem"), ("All files", "*.*")])
-        if chosen:
-            self.cert_path.set(chosen)
+            self.install_dir.set(str(Path(chosen) / "Route Tracker" / "Agent"))
 
     def _log(self, msg: str):
         self.log.configure(state="normal")
@@ -133,13 +123,13 @@ class InstallerApp:
         return result
 
     def _start_install(self):
-        addr = self.manager_addr.get().strip()
-        api_key = self.api_key.get().strip()
-        if not addr or ":" not in addr:
-            messagebox.showerror(APP_NAME, "Enter the manager address as host:port, e.g. 192.168.1.10:8443")
+        cloud_url = self.cloud_url.get().strip().rstrip("/")
+        token = self.token.get().strip()
+        if not cloud_url.startswith("https://") and not cloud_url.startswith("http://"):
+            messagebox.showerror(APP_NAME, "Cloud endpoint URL must start with https://")
             return
-        if not api_key:
-            messagebox.showerror(APP_NAME, "Enter the API key from the manager's config\\clients.json")
+        if not token:
+            messagebox.showerror(APP_NAME, "Paste the enrollment token from the setup script.")
             return
         self.install_btn.configure(state="disabled")
         threading.Thread(target=self._run_install, daemon=True).start()
@@ -147,8 +137,8 @@ class InstallerApp:
     def _run_install(self):
         try:
             install_dir = Path(self.install_dir.get())
-            addr = self.manager_addr.get().strip()
-            host, port = addr.rsplit(":", 1)
+            cloud_url = self.cloud_url.get().strip().rstrip("/")
+            token = self.token.get().strip()
             src = payload_dir()
 
             if not src.exists():
@@ -161,21 +151,10 @@ class InstallerApp:
             shutil.copytree(src, install_dir, dirs_exist_ok=True)
             exe = install_dir / "LanUsageMonitorAgent.exe"
 
-            cert_path = self.cert_path.get().strip()
-            ca_cert_path = ""
-            if cert_path:
-                self._log("Copying manager certificate...")
-                shutil.copy(cert_path, install_dir / "cert.pem")
-                ca_cert_path = "cert.pem"
-
             config = {
-                "client_id": self.client_id.get().strip(),
-                "api_key": self.api_key.get().strip(),
-                "manager_url": f"https://{host}:{port}/api/report",
-                "verify_ssl": bool(ca_cert_path),
-                "ca_cert_path": ca_cert_path,
-                "report_interval_seconds": 30,
-                "exclude_remote_ports": [int(port)],
+                "cloud_base_url": cloud_url,
+                "enrollment_token": token,
+                "report_interval_seconds": 180,
             }
             (install_dir / "config.json").write_text(json.dumps(config, indent=2))
             self._log("Wrote config.json")
@@ -199,7 +178,12 @@ class InstallerApp:
             self._log("")
             if result.returncode == 0:
                 self._log("=== Install complete -- agent is running ===")
-                messagebox.showinfo(APP_NAME, "Install complete. The agent is now running and reporting to the manager.")
+                messagebox.showinfo(
+                    APP_NAME,
+                    "Install complete.\n\n"
+                    "This PC will enroll itself and appear on the dashboard within a "
+                    "few minutes -- nothing else to do here.",
+                )
             else:
                 self._log("=== Installed, but the service did not start -- check logs\\agent.log ===")
                 messagebox.showwarning(
@@ -216,8 +200,8 @@ class InstallerApp:
     def _register_uninstaller(self, exe: Path, install_dir: Path):
         with winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, UNINSTALL_KEY) as key:
             winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, APP_NAME)
-            winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, "0.1.0")
-            winreg.SetValueEx(key, "Publisher", 0, winreg.REG_SZ, "LAN Usage Monitor")
+            winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, "0.2.0")
+            winreg.SetValueEx(key, "Publisher", 0, winreg.REG_SZ, "Route Tracker")
             winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, str(install_dir))
             winreg.SetValueEx(key, "DisplayIcon", 0, winreg.REG_SZ, str(exe))
             winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ, f'"{exe}" uninstall-all')

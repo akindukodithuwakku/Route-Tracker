@@ -2,6 +2,9 @@
 __pycache__/
 *.pyc
 
+# Node
+node_modules/
+
 # Virtual environments
 .venv/
 venv/
@@ -11,21 +14,37 @@ build/
 dist/
 *.spec
 
-# Built installers (large binaries -- distribute via GitHub Releases instead)
+# TypeScript / Vite build output
+functions/lib/
+web/dist/
+
+# Built installer (large binary -- distribute via GitHub Releases instead)
 release/*.exe
 
-# Per-machine runtime state -- generated on first run, contains secrets
-manager/config/clients.json
-manager/config/server.json
-manager/certs/
-manager/data/
+# Per-machine agent state -- generated on first run, contains secrets
 client_agent/config.json
+client_agent/credentials.json
 client_agent/data/
 client_agent/logs/
-client_agent/cert.pem
+
+# Web app's Firebase project config (not secret, but env-specific)
+web/.env.local
+
+# Firebase CLI / emulator local state
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+*-debug.log
 
 # Logs
 *.log
 
 # Claude Code local session settings (personal, not shared)
 .claude/settings.local.json
+
+# TypeScript incremental build cache
+*.tsbuildinfo
+
+# Claude Code local task state
+.claude/

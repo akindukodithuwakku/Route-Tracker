@@ -1,0 +1,59 @@
+rules_version = '2';
+
+// Two principals exist:
+//   - the manager, signed in with Firebase Auth, who may READ usage data
+//   - agents, which hold no Firebase credential at all and reach the database
+//     only through the Cloud Functions (the Admin SDK bypasses these rules)
+//
+// So every client-SDK write to usage data is denied unconditionally, and a
+// device key lifted off a client PC is useless against Firestore directly.
+//
+// Being signed in is NOT enough to read anything: anyone can create an account
+// against a Firebase project's public auth API, so authorization is gated on a
+// managers/{uid} document that only the setup script (Admin SDK) can create.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isManager() {
+      return request.auth != null
+             && exists(/databases/$(database)/documents/managers/$(request.auth.uid));
+    }
+
+    match /devices/{deviceId} {
+      allow read: if isManager();
+      // The manager may rename a PC or revoke it; nothing else.
+      allow update: if isManager()
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                         .hasOnly(['displayName', 'revoked']);
+      allow create, delete: if false;
+
+      match /daily/{date} {
+        allow read: if isManager();
+        allow write: if false;
+      }
+
+      // keyHash lives here rather than on the device document, because rules
+      // cannot filter individual fields out of a read -- anything the manager
+      // can read, the browser downloads.
+      match /private/{document=**} {
+        allow read, write: if false;
+      }
+    }
+
+    // Who counts as a manager. Readable so a signed-in user can confirm their
+    // own access; writable only by the Admin SDK.
+    match /managers/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    // Enrollment token hash. Never readable by any client.
+    match /config/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

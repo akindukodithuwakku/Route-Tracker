@@ -39,38 +39,50 @@ def _is_private(ip: str) -> bool:
         return True
 
 
+_EXCLUDED_FLOW_TTL = 300.0  # bound how long a resolved-excluded flow is remembered
+
+
 class CaptureEngine:
-    def __init__(self, aggregator: Aggregator, exclude_ports=(), flush_interval=30.0, on_flush=None):
+    def __init__(self, aggregator: Aggregator, exclude_domains=(), flush_interval=30.0, on_flush=None):
         """
-        exclude_ports: remote TCP ports to ignore entirely (use this to
-        exclude the manager's own report port, so the agent doesn't try to
-        classify/measure its own outgoing reports as "usage").
+        exclude_domains: domains (matched against parsed SNI/HTTP Host) to
+        ignore entirely -- used to exclude the agent's own reporting traffic
+        to the cloud endpoint, so it doesn't measure/attribute its own
+        outgoing reports as "usage". Matched by domain rather than port,
+        since the endpoint is a normal HTTPS host sharing port 443 with
+        everything else.
         """
         self._aggregator = aggregator
-        self._exclude_ports = set(exclude_ports)
+        self._exclude_domains = set(exclude_domains)
         self._flush_interval = flush_interval
         self._on_flush = on_flush
         self._process_lookup = ProcessLookup()
         self._stop = threading.Event()
         self._rdns_queue = []
         self._rdns_lock = threading.Lock()
+        # A flow's domain is only known once its ClientHello/Host is parsed,
+        # so once we recognize one as excluded we remember it by flow_key --
+        # every later packet on the same connection skips domain parsing.
+        self._excluded_flows = {}
 
     def _handle_packet(self, packet):
         proto = "tcp" if packet.tcp else ("udp" if packet.udp else None)
         if proto is None:
             return
 
-        remote_port = packet.dst_port if packet.is_outbound else packet.src_port
-        if remote_port in self._exclude_ports:
-            return
-
         local_ip = packet.src_addr if packet.is_outbound else packet.dst_addr
         local_port = packet.src_port if packet.is_outbound else packet.dst_port
         remote_ip = packet.dst_addr if packet.is_outbound else packet.src_addr
+        remote_port = packet.dst_port if packet.is_outbound else packet.src_port
 
         # Normalize the flow key regardless of which direction we happen to
         # observe first, so both directions of one connection share a bucket.
         flow_key = FlowKey(proto, local_ip, local_port, remote_ip, remote_port)
+
+        now = time.time()
+        if flow_key in self._excluded_flows:
+            self._excluded_flows[flow_key] = now
+            return
 
         domain = None
         payload = packet.tcp.payload if packet.tcp else (packet.udp.payload if packet.udp else b"")
@@ -79,6 +91,10 @@ class CaptureEngine:
                 domain = sni_parser.parse_tls_client_hello_sni(payload)
             elif remote_port in _HTTP_PORTS:
                 domain = sni_parser.parse_http_host(payload)
+
+        if domain and domain in self._exclude_domains:
+            self._excluded_flows[flow_key] = now
+            return
 
         process_name = None
         if packet.is_outbound:
@@ -109,6 +125,11 @@ class CaptureEngine:
             records = self._aggregator.flush()
             if records and self._on_flush:
                 self._on_flush(records)
+
+            cutoff = time.time() - _EXCLUDED_FLOW_TTL
+            stale = [k for k, last_seen in self._excluded_flows.items() if last_seen < cutoff]
+            for k in stale:
+                del self._excluded_flows[k]
 
     def run(self):
         """Blocks until stop() is called from another thread."""

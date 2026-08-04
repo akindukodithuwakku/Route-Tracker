@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import load_config
 from aggregator import Aggregator
 from capture import CaptureEngine
+from enrollment import get_or_create_credentials
 from reporter import Reporter
 from paths import base_dir
 
@@ -49,20 +50,22 @@ def run_forever(stop_event=None):
     stop_event = stop_event or _default_stop_event()
 
     cfg = load_config()
-    log.info("agent starting: client_id=%s manager=%s", cfg.client_id, cfg.manager_url)
+    log.info("agent starting: cloud=%s", cfg.cloud_base_url)
 
-    reporter = Reporter(cfg)
+    credentials = get_or_create_credentials(cfg, stop_event)
+    if credentials is None:
+        log.info("stopped before enrollment completed")
+        return
+    device_id, device_key = credentials
+
+    reporter = Reporter(cfg, device_id, device_key)
     reporter.start()
-
-    # Exclude the manager's own port from capture so the agent doesn't
-    # measure/attribute its own outgoing reports as "usage".
-    exclude_ports = set(cfg.exclude_remote_ports)
 
     while not stop_event.is_set():
         aggregator = Aggregator()
         engine = CaptureEngine(
             aggregator,
-            exclude_ports=exclude_ports,
+            exclude_domains=cfg.exclude_domains,
             flush_interval=cfg.report_interval_seconds,
             on_flush=reporter.submit,
         )

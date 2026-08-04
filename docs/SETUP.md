@@ -1,21 +1,25 @@
-# LAN Internet Usage Monitor -- Setup Guide
+# Route Tracker -- Setup Guide
 
 Tracks each client PC's internet usage (domains visited, time spent,
-bandwidth) and reports it to one manager PC's localhost dashboard.
+bandwidth) and reports it to a web dashboard you can open from anywhere.
+
+This is a one-time cloud setup (about 15 minutes) followed by a one-time
+install on each client PC (about 1 minute each, no configuration to type in
+beyond a single pasted token).
 
 ## How it works
 
 - Each **client PC** runs an agent (Windows Service) that watches its own
   network traffic locally, reads the domain name out of the TLS handshake
-  (SNI) or HTTP `Host:` header, counts bytes per domain, and every 30s sends
-  a batch to the manager over HTTPS.
-- The **manager PC** runs a small server (Windows Service) that receives
-  those batches, stores them in a local SQLite database, and serves a
-  dashboard at `https://<manager>:8443/`.
-- Only the manager PC receives data; nothing is sent anywhere else. The
-  manager's firewall rule restricts inbound connections to your LAN subnet.
-- If the manager is briefly unreachable, each agent queues its reports to
-  disk and retries with backoff -- no data is lost.
+  (SNI) or HTTP `Host:` header, counts bytes per domain, and every 3 minutes
+  sends a batch to the cloud.
+- The **cloud backend** (Firebase: Cloud Functions + Firestore) receives
+  those batches and stores them. There is no manager PC to install or keep
+  running -- the cloud replaces it.
+- The **dashboard** is a web page (Firebase Hosting) you open in any
+  browser, from anywhere, after signing in.
+- If the cloud is briefly unreachable, each agent queues its reports to disk
+  and retries with backoff -- no data is lost.
 
 **Before deploying:** monitoring traffic metadata from these PCs should be
 disclosed to whoever uses them, per your organization's IT/monitoring
@@ -25,88 +29,108 @@ entry.
 
 ## Requirements
 
-- 6 Windows PCs on the same LAN (1 manager + 5 clients), all reachable from
-  each other.
-- Administrator rights on all 6 PCs (Windows Services + the packet-capture
-  driver both require it). No Python installation needed -- the two
-  installers below are fully self-contained.
-- The manager PC should have a static IP or DHCP reservation, since every
-  client agent points at it by address.
+- A Google account, for a free Firebase project.
+- A card on file for Firebase's Blaze (pay-as-you-go) plan -- **required to
+  enable Cloud Functions at all**, but expected cost is $0/month for 5 PCs
+  reporting every 3 minutes (see docs/ARCHITECTURE.md for the numbers).
+  Firebase will not silently charge you beyond the plan's usage-based
+  pricing; there's no fixed fee.
+- Node.js 20+ on the machine you use to deploy (not needed on the client
+  PCs -- their installer is a self-contained `.exe`).
+- Administrator rights on each of the 5 client PCs (the packet-capture
+  driver requires it).
 
-## 1. Install on the manager PC
+## 1. Create the Firebase project
 
-Copy **`ManagerSetup.exe`** to the manager PC and run it.
+1. Go to [console.firebase.google.com](https://console.firebase.google.com)
+   and create a project.
+2. **Upgrade to the Blaze plan** (Project settings -> Usage and billing) --
+   this is required for Cloud Functions to make outbound network calls at
+   all, even within the free quota.
+3. **Firestore Database** -> Create database -> Production mode -> pick a
+   region (e.g. `us-central1` -- must match `functions/src/index.ts`'s
+   `region("us-central1")` if you change it).
+4. **Authentication** -> Sign-in method -> enable **Email/Password**.
+5. **Project settings -> General -> Your apps** -> Add app -> Web. Copy the
+   `firebaseConfig` values shown -- you'll need them in step 3.
+
+## 2. Point this repo at your project
+
+```bash
+npm install
+npx firebase login
+npx firebase use --add          # pick your project, alias it "default"
+```
+
+Copy `web/.env.example` to `web/.env.local` and fill in the values from
+step 1.5:
+
+```bash
+cp web/.env.example web/.env.local
+```
+
+## 3. Deploy
+
+```bash
+npm run deploy
+```
+
+This builds the Cloud Functions and the dashboard, then deploys Firestore
+rules, Functions, and Hosting. First deploy takes a few minutes.
+
+## 4. Run the one-time setup script
+
+```bash
+node scripts/setup-project.js --email you@example.com
+```
+
+This creates your manager login (prints a generated password if you didn't
+pass `--password`), authorizes it to view the dashboard, and prints an
+**enrollment token** -- shown once, save it now. It's the same token pasted
+into every client PC's installer.
+
+## 5. Install the agent on each client PC (repeat 5x)
+
+Copy **`ClientAgentSetup.exe`** (from `release/`, or built via
+`client_agent`'s own build steps below) to the client PC and run it.
 
 1. It will prompt for admin rights (UAC) -- accept.
-2. Fill in:
-   - **Install to** -- default `C:\Program Files\LAN Usage Monitor\Manager` is fine.
-   - **Allow connections from LAN subnet** -- auto-detected (e.g. `192.168.1.0/24`);
-     adjust if your LAN uses a different range.
-3. Click **Install**. It generates a TLS cert, registers the
-   `LanUsageMonitorManager` Windows Service (auto-start, auto-restart on
-   crash), opens a firewall rule scoped to your LAN subnet, and starts it.
-4. When it finishes, note the two paths it shows you:
-   - The dashboard URL (`https://localhost:8443/`)
-   - `config\clients.json` -- has 5 auto-generated entries (`pc1`..`pc5`),
-     each with a random `api_key`. Open it and rename `display_name` to
-     something recognizable if you like (e.g. "Front Desk"). You'll copy
-     each `client_id`/`api_key` pair to the matching client PC.
-5. Also grab `certs\cert.pem` from the install folder -- copy it somewhere
-   reachable from each client PC (USB stick or network share; it's a public
-   cert, not a secret).
-6. Confirm it's running: browse to `https://<manager-ip>:8443/`. Expect a
-   browser warning about the self-signed cert (safe to accept on your own
-   LAN tool) and an empty dashboard (no client PCs have reported yet).
-
-## 2. Install on each client PC (repeat 5x)
-
-Copy **`ClientAgentSetup.exe`** to the client PC and run it.
-
-1. It will prompt for admin rights (UAC) -- accept.
-2. Fill in:
-   - **Install to** -- default is fine.
-   - **Manager address** -- `<manager-ip>:8443`.
-   - **Client ID** -- `pc1` through `pc5`, matching an entry in the
-     manager's `clients.json` (use a different one per PC).
-   - **API key** -- the matching `api_key` from the manager's `clients.json`.
-   - **Manager cert.pem** -- browse to the `cert.pem` you copied from the
-     manager. You can skip this, but then the agent won't verify it's really
-     talking to your manager (fine on a trusted LAN, not recommended
-     otherwise).
+2. Paste the two values from step 4's output:
+   - **Cloud endpoint URL** -- looks like
+     `https://us-central1-your-project.cloudfunctions.net`
+   - **Enrollment token**
 3. Click **Install**. It registers the `LanUsageMonitorAgent` Windows
    Service (auto-start, auto-restart on crash) and starts it immediately.
 
-Within ~30-60 seconds of real browsing on that PC, you should see it appear
-"online" on the manager's dashboard with domains and bandwidth showing up.
+That PC enrolls itself using its own hostname and appears on the dashboard
+within a few minutes -- there is nothing to configure per PC beyond those
+two pasted values, and they're identical on all 5 machines.
 
-## 3. Using the dashboard
+## 6. Open the dashboard
 
-Open `https://<manager-ip>:8443/` from any browser on the LAN (including the
-manager PC itself, via `https://localhost:8443/`). It shows:
-
-- A card per client PC: online/offline, data downloaded/uploaded, active
-  time, distinct sites visited -- click a card to drill into just that PC.
-- A bandwidth-over-time chart and a top-sites-by-bandwidth list for whatever
-  is selected (all PCs, or one).
-- A range picker: Today / 24h / 7 days / 30 days.
-
-The page auto-refreshes every 10 seconds.
+`https://your-project.web.app` (or the URL `npm run deploy` printed). Sign
+in with the email/password from step 4.
 
 ## Adding more computers later
 
-The dashboard isn't hard-limited to 5 -- to add a 6th (or more) client PC:
+Run `ClientAgentSetup.exe` on the new PC with the **same** cloud URL and
+enrollment token used before. It appears on the dashboard by itself --
+nothing to do on the dashboard side, no dashboard-side setup per PC.
 
-1. On the manager PC, open `C:\Program Files\LAN Usage Monitor\Manager\config\clients.json`
-   and add a new entry, e.g.:
-   ```json
-   { "client_id": "pc6", "display_name": "New Desk", "api_key": "<make up a long random string>" }
-   ```
-2. Restart the manager service so it picks up the new entry:
-   ```powershell
-   Restart-Service LanUsageMonitorManager
-   ```
-3. Run `ClientAgentSetup.exe` on the new PC using `pc6` and that `api_key`,
-   same as section 2.
+## Building ClientAgentSetup.exe yourself
+
+If you're not using a prebuilt release, build it from `client_agent/`:
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\pip install -r requirements.txt pyinstaller
+.\.venv\Scripts\python -m PyInstaller service.py --name LanUsageMonitorAgent --onedir --console `
+    --paths "..\shared" --hidden-import win32timezone --hidden-import win32com --collect-all pydivert --noconfirm
+.\.venv\Scripts\python -m PyInstaller installer_gui.py --name ClientAgentSetup --onefile --windowed `
+    --add-data "dist\LanUsageMonitorAgent;payload" --hidden-import win32timezone --noconfirm
+```
+
+`dist\ClientAgentSetup.exe` is the installer to copy to each PC.
 
 ## Known limitations (v1)
 
@@ -119,31 +143,25 @@ The dashboard isn't hard-limited to 5 -- to add a 6th (or more) client PC:
 - **Process attribution** (which app made the connection) is best-effort:
   the OS connection table is sampled every ~2s rather than per-packet, so
   very short-lived connections may show no process name.
-- The manager dashboard itself is served over the same HTTPS port as the
-  ingest API; there's no separate login for the dashboard yet -- anyone who
-  can reach port 8443 on your LAN can view it. If that's not acceptable,
-  say so and we can add a login step.
+- Data is aggregated per local day per PC (not per individual visit), so the
+  dashboard shows "how much/how long per site per day", not a minute-by-minute
+  browsing history.
 
 ## Maintenance
 
-- **Rotate the TLS cert:** run `"C:\Program Files\LAN Usage Monitor\Manager\LanUsageMonitorManager.exe" gencert`
-  (elevated), then copy the new `cert.pem` to every client PC (no other
-  changes needed).
-- **Check service status:** `Get-Service LanUsageMonitorManager` /
-  `Get-Service LanUsageMonitorAgent`. Logs are in each install folder's
-  `logs\` subfolder (agent) or console output (manager, via Event Viewer ->
-  Windows Logs -> Application).
-- **Uninstall:** use Windows' "Add or remove programs" -- both show up as
-  "LAN Usage Monitor - Manager" / "LAN Usage Monitor - Agent". This stops
-  and removes the service, the firewall rule (manager only), and the
-  Add/Remove Programs entry itself; it leaves the install folder (config,
-  database, logs) in place in case you want to keep the history -- delete
-  it manually if not.
-
-## Advanced: installing from source instead
-
-If you'd rather run from source (e.g. to modify the code), the `manager/`
-and `client_agent/` folders are plain Python projects with their own
-`install_service.ps1` scripts that do the same install steps without
-needing the prebuilt `.exe`s -- see the comments at the top of each script.
-This requires Python 3.10+ on the target PC.
+- **Rename a PC on the dashboard:** click its card; renaming support can be
+  wired up via `renameDevice()` in `web/src/lib/useUsage.ts` -- it's exposed
+  but not yet bound to a UI control in v1.
+- **Revoke a PC** (e.g. decommissioned): set `revoked: true` on its
+  `devices/{id}` document (Firestore console, or extend the dashboard). Its
+  reports will then be rejected with 403 until un-revoked.
+- **Rotate the enrollment token:**
+  `node scripts/setup-project.js --email you@example.com --rotate-token`.
+  Already-enrolled PCs are unaffected (they keep their own device_id/key);
+  this only changes what a *new* install needs to paste.
+- **Add another manager account:**
+  `node scripts/setup-project.js --email someone-else@example.com`.
+- **Uninstall the agent:** Windows "Add or remove programs" -> "Route
+  Tracker - Agent". Stops and removes the service and the Add/Remove
+  Programs entry; leaves `config.json`/`credentials.json`/logs in the
+  install folder in case you want them -- delete the folder manually if not.

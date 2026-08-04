@@ -1,13 +1,14 @@
 """
-Sends aggregated usage batches to the manager over HTTPS, with a durable
-local queue underneath so a temporarily-unreachable manager (rebooting,
-network blip) never loses data -- everything is written to disk first and
-only removed from the queue after the manager confirms receipt (HTTP 200).
+Sends aggregated usage batches to the cloud, with a durable local queue
+underneath so a temporarily-unreachable network never loses data --
+everything is written to disk first and only removed from the queue after
+the server confirms receipt (HTTP 200).
 """
 
 import logging
 import threading
 import time
+from datetime import datetime
 
 import requests
 
@@ -16,17 +17,24 @@ from config import Config
 
 log = logging.getLogger("reporter")
 
-AGENT_VERSION = "0.1.0"
-PROTOCOL_VERSION = 1
+AGENT_VERSION = "0.2.0"
 
 _MIN_BACKOFF = 2.0
 _MAX_BACKOFF = 60.0
-_SEND_TIMEOUT = 10.0
+_SEND_TIMEOUT = 15.0
+
+
+def _tz_offset_minutes() -> int:
+    """Current UTC offset for this PC's local clock, DST-aware."""
+    offset = datetime.now().astimezone().utcoffset()
+    return int(offset.total_seconds() // 60) if offset else 0
 
 
 class Reporter:
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, device_id: str, device_key: str):
         self._cfg = cfg
+        self._device_id = device_id
+        self._device_key = device_key
         self._stop = threading.Event()
         self._backoff = _MIN_BACKOFF
         local_queue.init()
@@ -37,10 +45,10 @@ class Reporter:
         if not records:
             return
         batch = {
-            "client_id": self._cfg.client_id,
-            "hostname": self._cfg.hostname,
+            "device_id": self._device_id,
+            "device_key": self._device_key,
             "agent_version": AGENT_VERSION,
-            "protocol_version": PROTOCOL_VERSION,
+            "tz_offset_minutes": _tz_offset_minutes(),
             "records": [r.to_dict() for r in records],
         }
         local_queue.enqueue(batch, created_at=time.time())
@@ -49,18 +57,16 @@ class Reporter:
     def _send_batch(self, batch: dict) -> bool:
         try:
             resp = requests.post(
-                self._cfg.manager_url,
+                f"{self._cfg.cloud_base_url}/report",
                 json=batch,
-                headers={"X-API-Key": self._cfg.api_key},
                 timeout=_SEND_TIMEOUT,
-                verify=self._cfg.requests_verify,
             )
             if resp.status_code == 200:
                 return True
-            log.warning("manager rejected batch: HTTP %d %s", resp.status_code, resp.text[:200])
+            log.warning("server rejected batch: HTTP %d %s", resp.status_code, resp.text[:200])
             return False
         except requests.RequestException as e:
-            log.warning("send failed (manager unreachable?): %s", e)
+            log.warning("send failed (offline?): %s", e)
             return False
 
     def _drain_loop(self):

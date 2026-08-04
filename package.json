@@ -1,0 +1,16 @@
+{
+  "name": "route-tracker",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Cloud dashboard + Windows agents for tracking per-PC internet usage on a LAN",
+  "scripts": {
+    "emulators": "firebase emulators:start --only functions,firestore,auth",
+    "build": "npm --prefix functions run build && npm --prefix web run build",
+    "deploy": "npm run build && firebase deploy",
+    "deploy:hosting": "npm --prefix web run build && firebase deploy --only hosting",
+    "setup": "node scripts/setup-project.js"
+  },
+  "devDependencies": {
+    "firebase-tools": "^13.29.1"
+  }
+}
