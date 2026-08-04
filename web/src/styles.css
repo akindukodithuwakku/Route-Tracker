@@ -144,16 +144,36 @@ button {
   padding: 15px 16px;
   text-align: left;
   transition: border-color 0.14s, transform 0.14s;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
 }
 
-.device-card:hover {
+button.device-card {
+  width: 100%;
+}
+
+.device-card:hover,
+.device-card:has(.device-card-main:hover) {
   border-color: var(--border-strong);
   transform: translateY(-1px);
 }
 
-.device-card[aria-pressed="true"] {
+.device-card[aria-pressed="true"],
+.device-card.is-selected {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent), 0 6px 20px -10px var(--accent);
+}
+
+.device-card-main {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  text-align: left;
+  width: 100%;
+  border-radius: 0;
 }
 
 .device-card .head {
@@ -161,6 +181,23 @@ button {
   align-items: center;
   gap: 8px;
   margin-bottom: 12px;
+}
+
+.device-remove-btn {
+  align-self: flex-start;
+  margin-top: 10px;
+  padding: 5px 10px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.device-remove-btn:hover {
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 40%, transparent);
+  background: color-mix(in srgb, var(--bad) 10%, transparent);
 }
 
 .device-card .name {
@@ -437,4 +474,79 @@ button {
   font-size: 12.5px;
   margin: 0 0 14px;
   line-height: 1.5;
+}
+
+/* ---------- confirm delete modal ---------- */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: #05070ccc;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+.modal {
+  width: min(100%, 420px);
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  padding: 22px 22px 18px;
+  box-shadow: 0 24px 60px -24px #000000aa;
+}
+
+.modal h2 {
+  margin: 0 0 10px;
+  font-size: 17px;
+}
+
+.modal p {
+  margin: 0 0 10px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+
+.modal p strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.modal-warn {
+  color: var(--warn) !important;
+  font-weight: 500;
+}
+
+.modal-error {
+  color: var(--bad) !important;
+  margin-bottom: 12px !important;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.danger-btn {
+  background: var(--bad);
+  border: 0;
+  color: #fff;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.danger-btn:hover {
+  filter: brightness(1.05);
+}
+
+.danger-btn:disabled,
+.ghost-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }

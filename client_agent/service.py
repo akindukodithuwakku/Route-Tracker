@@ -51,6 +51,8 @@ class AgentService(win32serviceutil.ServiceFramework):
 
     def __init__(self, args):
         super().__init__(args)
+        # Required by pywin32 ServiceFramework: SvcDoRun waits on this, SvcStop signals it.
+        self.hWaitStop = win32event.CreateEvent(None, 0, 0, None)
         self.stop_event = threading.Event()
         self._worker_thread = None
 
@@ -60,6 +62,9 @@ class AgentService(win32serviceutil.ServiceFramework):
         win32event.SetEvent(self.hWaitStop)
 
     def SvcDoRun(self):
+        # Tell SCM we're up immediately so start doesn't hit error 1053 while
+        # enrollment / WinDivert init runs on the worker thread.
+        self.ReportServiceStatus(win32service.SERVICE_RUNNING)
         servicemanager.LogMsg(
             servicemanager.EVENTLOG_INFORMATION_TYPE,
             servicemanager.PYS_SERVICE_STARTED,
@@ -72,6 +77,7 @@ class AgentService(win32serviceutil.ServiceFramework):
         # Block here until SvcStop signals hWaitStop; SvcDoRun returning is
         # what tells SCM the service has stopped.
         win32event.WaitForSingleObject(self.hWaitStop, win32event.INFINITE)
+        self.stop_event.set()
         self._worker_thread.join(timeout=15.0)
 
 

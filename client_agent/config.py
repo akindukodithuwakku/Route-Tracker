@@ -19,7 +19,7 @@ from paths import base_dir
 CONFIG_PATH = base_dir() / "config.json"
 
 _TEMPLATE = {
-    "cloud_base_url": "https://us-central1-REPLACE_ME.cloudfunctions.net",
+    "cloud_base_url": "https://asia-south1-REPLACE_ME.cloudfunctions.net",
     "enrollment_token": "REPLACE_ME_WITH_TOKEN_FROM_SETUP_SCRIPT",
     "report_interval_seconds": 180,
 }

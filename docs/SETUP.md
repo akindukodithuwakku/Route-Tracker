@@ -48,8 +48,8 @@ entry.
    this is required for Cloud Functions to make outbound network calls at
    all, even within the free quota.
 3. **Firestore Database** -> Create database -> Production mode -> pick a
-   region (e.g. `us-central1` -- must match `functions/src/index.ts`'s
-   `region("us-central1")` if you change it).
+   region (e.g. `asia-south1` / Mumbai -- must match `functions/src/index.ts`'s
+   `region("asia-south1")` if you change it).
 4. **Authentication** -> Sign-in method -> enable **Email/Password**.
 5. **Project settings -> General -> Your apps** -> Add app -> Web. Copy the
    `firebaseConfig` values shown -- you'll need them in step 3.
@@ -97,7 +97,7 @@ Copy **`ClientAgentSetup.exe`** (from `release/`, or built via
 1. It will prompt for admin rights (UAC) -- accept.
 2. Paste the two values from step 4's output:
    - **Cloud endpoint URL** -- looks like
-     `https://us-central1-your-project.cloudfunctions.net`
+     `https://asia-south1-your-project.cloudfunctions.net`
    - **Enrollment token**
 3. Click **Install**. It registers the `LanUsageMonitorAgent` Windows
    Service (auto-start, auto-restart on crash) and starts it immediately.
@@ -152,9 +152,13 @@ py -m venv .venv
 - **Rename a PC on the dashboard:** click its card; renaming support can be
   wired up via `renameDevice()` in `web/src/lib/useUsage.ts` -- it's exposed
   but not yet bound to a UI control in v1.
-- **Revoke a PC** (e.g. decommissioned): set `revoked: true` on its
-  `devices/{id}` document (Firestore console, or extend the dashboard). Its
-  reports will then be rejected with 403 until un-revoked.
+- **Remove a PC** from the dashboard: open the PC card and click **Remove**,
+  then confirm. That permanently deletes the device and all of its usage
+  history. The agent on that PC will be rejected until reinstalled with the
+  enrollment token.
+- **Revoke a PC** without deleting history: set `revoked: true` on its
+  `devices/{id}` document (Firestore console). Its reports will then be
+  rejected with 403 until un-revoked.
 - **Rotate the enrollment token:**
   `node scripts/setup-project.js --email you@example.com --rotate-token`.
   Already-enrolled PCs are unaffected (they keep their own device_id/key);

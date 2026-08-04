@@ -2,10 +2,17 @@ import { useEffect, useMemo, useState } from "react";
 import { onAuthStateChanged, signOut, type User } from "firebase/auth";
 
 import { auth, missingConfig } from "./lib/firebase";
-import { aggregateDomains, summarize, useDailyData, useDevices } from "./lib/useUsage";
+import {
+  aggregateDomains,
+  deleteDevice,
+  summarize,
+  useDailyData,
+  useDevices,
+} from "./lib/useUsage";
 import { RANGE_LABELS, type RangeKey } from "./lib/types";
 import { LoginScreen } from "./components/LoginScreen";
 import { DeviceGrid } from "./components/DeviceGrid";
+import { ConfirmDeleteModal } from "./components/ConfirmDeleteModal";
 import { TopDomains } from "./components/TopDomains";
 import { UsageChart } from "./components/UsageChart";
 
@@ -49,6 +56,9 @@ export default function App() {
 function Dashboard({ email }: { email: string }) {
   const [range, setRange] = useState<RangeKey>("today");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const { devices, loading, error } = useDevices();
 
@@ -79,6 +89,31 @@ function Dashboard({ email }: { email: string }) {
     ? devices.find((d) => d.id === selectedId)?.displayName ?? "PC"
     : "All PCs";
 
+  const pendingDeleteName =
+    devices.find((d) => d.id === pendingDeleteId)?.displayName ?? "this PC";
+
+  const handleRequestRemove = (deviceId: string) => {
+    setDeleteError(null);
+    setPendingDeleteId(deviceId);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!pendingDeleteId || deleteBusy) return;
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      await deleteDevice(pendingDeleteId);
+      if (selectedId === pendingDeleteId) setSelectedId(null);
+      setPendingDeleteId(null);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Couldn't remove this PC. Try again.";
+      setDeleteError(message);
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
   return (
     <div className="app">
       <header className="topbar">
@@ -95,6 +130,7 @@ function Dashboard({ email }: { email: string }) {
             {RANGES.map((key) => (
               <button
                 key={key}
+                type="button"
                 aria-pressed={range === key}
                 onClick={() => setRange(key)}
               >
@@ -102,7 +138,7 @@ function Dashboard({ email }: { email: string }) {
               </button>
             ))}
           </div>
-          <button className="ghost-btn" onClick={() => signOut(auth)}>
+          <button type="button" className="ghost-btn" onClick={() => signOut(auth)}>
             Sign out
           </button>
         </div>
@@ -129,7 +165,12 @@ function Dashboard({ email }: { email: string }) {
         </div>
       )}
 
-      <DeviceGrid summaries={summaries} selectedId={selectedId} onSelect={setSelectedId} />
+      <DeviceGrid
+        summaries={summaries}
+        selectedId={selectedId}
+        onSelect={setSelectedId}
+        onRequestRemove={handleRequestRemove}
+      />
 
       <div className="panels">
         <section className="panel">
@@ -168,6 +209,22 @@ function Dashboard({ email }: { email: string }) {
             />
           </section>
         </div>
+      )}
+
+      {pendingDeleteId && (
+        <ConfirmDeleteModal
+          deviceName={pendingDeleteName}
+          busy={deleteBusy}
+          error={deleteError}
+          onCancel={() => {
+            if (deleteBusy) return;
+            setPendingDeleteId(null);
+            setDeleteError(null);
+          }}
+          onConfirm={() => {
+            void handleConfirmDelete();
+          }}
+        />
       )}
     </div>
   );

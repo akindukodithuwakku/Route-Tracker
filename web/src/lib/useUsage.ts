@@ -8,8 +8,9 @@ import {
   where,
   type Timestamp,
 } from "firebase/firestore";
+import { httpsCallable } from "firebase/functions";
 
-import { db } from "./firebase";
+import { db, functions } from "./firebase";
 import { localDateKey } from "./format";
 import type { DailyDoc, Device, DeviceSummary, KeyTotals, RangeKey } from "./types";
 import { RANGE_DAYS } from "./types";
@@ -171,4 +172,13 @@ export function aggregateDomains(
 
 export async function renameDevice(deviceId: string, displayName: string) {
   await updateDoc(doc(db, "devices", deviceId), { displayName });
+}
+
+/** Permanently deletes the device and all related Firestore data via Cloud Function. */
+export async function deleteDevice(deviceId: string) {
+  const callable = httpsCallable<{ deviceId: string }, { status: string }>(
+    functions,
+    "deleteDevice"
+  );
+  await callable({ deviceId });
 }

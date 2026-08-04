@@ -5,7 +5,7 @@
  *
  * Deliberately 1st-gen functions (the `functions.https` namespace), not v2:
  * 1st-gen HTTPS functions get the predictable
- * https://us-central1-<project>.cloudfunctions.net/<name> URL, which is what
+ * https://asia-south1-<project>.cloudfunctions.net/<name> URL, which is what
  * gets typed into ClientAgentSetup.exe on every PC. 2nd-gen functions deploy
  * as Cloud Run services with an unpredictable hashed URL instead -- a poor
  * fit for a value a human copies once and every agent hard-codes.
@@ -99,7 +99,7 @@ function fail(res: HttpResponse, status: number, message: string): void {
  * the existing device so a reinstall doesn't create a duplicate card.
  */
 export const enroll = functions
-  .region("us-central1")
+  .region("asia-south1")
   .runWith({ maxInstances: 5 })
   .https.onRequest(async (req, res): Promise<void> => {
     if (req.method !== "POST") return fail(res, 405, "POST only");
@@ -172,7 +172,7 @@ export const enroll = functions
  * precomputed here, so a 30-day view reads ~150 documents instead of ~150k.
  */
 export const report = functions
-  .region("us-central1")
+  .region("asia-south1")
   .runWith({ maxInstances: 10 })
   .https.onRequest(async (req, res): Promise<void> => {
     if (req.method !== "POST") return fail(res, 405, "POST only");
@@ -304,4 +304,46 @@ export const report = functions
       dropped,
       dates: [...byDate.keys()],
     });
+  });
+
+/**
+ * Callable from the dashboard. Deletes a device and every related document
+ * (daily aggregates, private auth key hash). Only authorized managers may
+ * invoke this -- Firestore rules deny client-side deletes entirely.
+ */
+export const deleteDevice = functions
+  .region("asia-south1")
+  .runWith({ maxInstances: 5 })
+  .https.onCall(async (data, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError("unauthenticated", "Sign in required");
+    }
+
+    const managerSnap = await db.doc(`managers/${context.auth.uid}`).get();
+    if (!managerSnap.exists) {
+      throw new functions.https.HttpsError("permission-denied", "Not an authorized manager");
+    }
+
+    const deviceId =
+      typeof data?.deviceId === "string" ? data.deviceId.trim().slice(0, 128) : "";
+    if (!deviceId) {
+      throw new functions.https.HttpsError("invalid-argument", "deviceId is required");
+    }
+
+    const deviceRef = db.collection("devices").doc(deviceId);
+    const deviceSnap = await deviceRef.get();
+    if (!deviceSnap.exists) {
+      throw new functions.https.HttpsError("not-found", "Device not found");
+    }
+
+    // recursiveDelete removes the device doc plus daily/ and private/ children.
+    await db.recursiveDelete(deviceRef);
+
+    logger.info("deleted device and related data", {
+      deviceId,
+      hostname: deviceSnap.get("hostname") ?? null,
+      by: context.auth.uid,
+    });
+
+    return { status: "ok", deviceId };
   });

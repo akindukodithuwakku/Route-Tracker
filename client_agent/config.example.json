@@ -1,5 +1,5 @@
 {
-  "cloud_base_url": "https://us-central1-YOUR-PROJECT-ID.cloudfunctions.net",
+  "cloud_base_url": "https://asia-south1-YOUR-PROJECT-ID.cloudfunctions.net",
   "enrollment_token": "PASTE_THE_TOKEN_FROM_setup-project.js",
   "report_interval_seconds": 180
 }

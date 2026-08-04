@@ -133,16 +133,25 @@ class CaptureEngine:
 
     def run(self):
         """Blocks until stop() is called from another thread."""
-        wd_filter = "(tcp or udp) and !loopback"
+        # pydivert 2.1 bundles WinDivert 1.3, which does not understand the
+        # WinDivert 2.x `loopback` keyword -- using it makes WinDivertOpen
+        # fail with WinError 87 (ERROR_INVALID_PARAMETER). Capture all
+        # TCP/UDP and skip private/loopback attribution in _handle_packet.
+        wd_filter = "tcp or udp"
         threading.Thread(target=self._rdns_worker, daemon=True).start()
         threading.Thread(target=self._flush_loop, daemon=True).start()
 
         with pydivert.WinDivert(wd_filter, layer=pydivert.Layer.NETWORK) as w:
             while not self._stop.is_set():
                 try:
-                    packet = w.recv(timeout=1000)
+                    # Older pydivert/WinDivert 1.3 has no recv(timeout=...);
+                    # use a short blocking recv and rely on stop() closing the
+                    # handle / the restart loop to exit promptly.
+                    packet = w.recv()
                 except OSError:
-                    continue  # timeout with no packet; loop and check _stop
+                    if self._stop.is_set():
+                        break
+                    continue
                 if packet is None:
                     continue
                 try:
