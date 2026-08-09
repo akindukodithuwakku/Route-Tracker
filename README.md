@@ -16,7 +16,7 @@ Windows PCs and reports it to a web dashboard you can open from anywhere.
 | Path | What it is |
 |---|---|
 | [`client_agent/`](client_agent) | Windows agent (Python): packet capture, TLS SNI → domain, durable retry queue, Windows Service wrapper, installer GUI |
-| [`functions/`](functions) | Cloud Functions (TypeScript): the `/enroll` and `/report` endpoints — the only thing with database write access |
+| [`functions/`](functions) | Cloud Functions (TypeScript): `/enroll`, `/report`, `deleteDevice`, and nightly `purgeOldDaily` (30-day retention) — the only writers to Firestore |
 | [`web/`](web) | Dashboard (React + TypeScript + Vite) |
 | [`shared/`](shared) | The usage-record shape the agent sends |
 | [`scripts/`](scripts) | One-time project setup (manager login, enrollment token) |

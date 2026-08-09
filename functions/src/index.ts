@@ -1,7 +1,9 @@
 /**
- * The only server-side component. Agents talk to these two endpoints and
- * nothing else; Firestore rules deny agent SDK access entirely, so a key
- * lifted off a client PC can submit that PC's own usage and do nothing more.
+ * The only server-side component. Agents talk to `/enroll` and `/report`;
+ * the dashboard uses `deleteDevice`. A nightly scheduler (`purgeOldDaily`)
+ * deletes daily aggregates past the retention window. Firestore rules deny
+ * agent SDK access entirely, so a key lifted off a client PC can submit that
+ * PC's own usage and do nothing more.
  *
  * Deliberately 1st-gen functions (the `functions.https` namespace), not v2:
  * 1st-gen HTTPS functions get the predictable
@@ -14,15 +16,18 @@
 import * as functions from "firebase-functions/v1";
 import * as logger from "firebase-functions/logger";
 import { initializeApp } from "firebase-admin/app";
-import { getFirestore, FieldValue, Timestamp } from "firebase-admin/firestore";
+import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import { randomBytes } from "node:crypto";
 
 import {
   MAX_RECORDS_PER_BATCH,
+  RETENTION_DAYS,
+  RETENTION_TZ,
   clampTzOffset,
   hashesMatch,
   isPlausibleTimestamp,
   localDateAndHour,
+  oldestRetainedDateKey,
   sanitizeKey,
   sha256,
   toFiniteSeconds,
@@ -73,15 +78,85 @@ function addTo(
   }
 }
 
-/** Turns accumulated counters into Firestore sentinels for a merge write. */
-function toIncrements(bucket: Record<string, DomainTotals>) {
-  const out: Record<string, unknown> = {};
-  for (const [key, totals] of Object.entries(bucket)) {
+/**
+ * Firestore allows at most 500 field transforms (FieldValue.increment, etc.)
+ * per document write. A busy PC easily exceeds that (domains × 3 increments),
+ * which surfaced as HTTP 500 from /report. So domain/process/hourly maps are
+ * merged in a transaction as plain numbers instead of nested increments.
+ */
+const MAX_MAP_KEYS = 800;
+
+function mergeTotals(
+  existing: Record<string, DomainTotals> | undefined,
+  delta: Record<string, DomainTotals>
+): Record<string, DomainTotals> {
+  const out: Record<string, DomainTotals> = {};
+  for (const [key, totals] of Object.entries(existing ?? {})) {
     out[key] = {
-      s: FieldValue.increment(totals.s),
-      r: FieldValue.increment(totals.r),
-      secs: FieldValue.increment(totals.secs),
+      s: Number(totals?.s) || 0,
+      r: Number(totals?.r) || 0,
+      secs: Number(totals?.secs) || 0,
     };
+  }
+  for (const [key, totals] of Object.entries(delta)) {
+    const cur = out[key];
+    if (cur) {
+      cur.s += totals.s;
+      cur.r += totals.r;
+      cur.secs += totals.secs;
+    } else {
+      out[key] = { s: totals.s, r: totals.r, secs: totals.secs };
+    }
+  }
+  return pruneMap(out, MAX_MAP_KEYS);
+}
+
+function mergeHourly(
+  existing: Record<string, { s: number; r: number }> | undefined,
+  delta: Record<string, { s: number; r: number }>
+): Record<string, { s: number; r: number }> {
+  const out: Record<string, { s: number; r: number }> = {};
+  for (const [hour, totals] of Object.entries(existing ?? {})) {
+    out[hour] = { s: Number(totals?.s) || 0, r: Number(totals?.r) || 0 };
+  }
+  for (const [hour, totals] of Object.entries(delta)) {
+    const cur = out[hour];
+    if (cur) {
+      cur.s += totals.s;
+      cur.r += totals.r;
+    } else {
+      out[hour] = { s: totals.s, r: totals.r };
+    }
+  }
+  return out;
+}
+
+/** Overflow bucket for pruned map tails. Must not use `__*` (Firestore-reserved). */
+const OTHER_KEY = "_other";
+
+/** Keep the heaviest keys; fold the long tail into _other so docs stay small. */
+function pruneMap(
+  map: Record<string, DomainTotals>,
+  maxKeys: number
+): Record<string, DomainTotals> {
+  const entries = Object.entries(map);
+  if (entries.length <= maxKeys) return map;
+
+  entries.sort((a, b) => b[1].s + b[1].r - (a[1].s + a[1].r));
+  const kept = entries.filter(([k]) => k !== OTHER_KEY).slice(0, maxKeys - 1);
+  const keptKeys = new Set(kept.map(([k]) => k));
+  let otherS = 0;
+  let otherR = 0;
+  let otherSecs = 0;
+  for (const [key, totals] of entries) {
+    if (keptKeys.has(key)) continue;
+    otherS += totals.s;
+    otherR += totals.r;
+    otherSecs += totals.secs;
+  }
+  const out: Record<string, DomainTotals> = Object.fromEntries(kept);
+  if (otherS || otherR || otherSecs) {
+    out[OTHER_KEY] = { s: otherS, r: otherR, secs: otherSecs };
   }
   return out;
 }
@@ -257,8 +332,6 @@ export const report = functions
       }
     }
 
-    const batch = db.batch();
-
     // Only write fields this batch actually carried: a report that omits
     // agent_version must not erase the version we already know.
     const deviceUpdate: Record<string, unknown> = {
@@ -268,34 +341,52 @@ export const report = functions
     if (typeof body.agent_version === "string" && body.agent_version) {
       deviceUpdate.agentVersion = body.agent_version.slice(0, 32);
     }
-    batch.update(deviceRef, deviceUpdate);
 
-    for (const [date, agg] of byDate) {
-      const hourlyIncrements: Record<string, unknown> = {};
-      for (const [hour, totals] of Object.entries(agg.hourly)) {
-        hourlyIncrements[hour] = {
-          s: FieldValue.increment(totals.s),
-          r: FieldValue.increment(totals.r),
-        };
-      }
+    try {
+      const dates = [...byDate.keys()];
+      const dailyRefs = dates.map((date) => deviceRef.collection("daily").doc(date));
 
-      batch.set(
-        deviceRef.collection("daily").doc(date),
-        {
-          date,
-          bytesSent: FieldValue.increment(agg.bytesSent),
-          bytesReceived: FieldValue.increment(agg.bytesReceived),
-          activeSeconds: FieldValue.increment(agg.activeSeconds),
-          domains: toIncrements(agg.domains),
-          processes: toIncrements(agg.processes),
-          hourly: hourlyIncrements,
-          updatedAt: Timestamp.now(),
-        },
-        { merge: true }
-      );
+      await db.runTransaction(async (tx) => {
+        // All reads before writes (Firestore transaction rule).
+        const dailySnaps = await Promise.all(dailyRefs.map((ref) => tx.get(ref)));
+
+        tx.update(deviceRef, deviceUpdate);
+
+        for (let i = 0; i < dates.length; i++) {
+          const date = dates[i]!;
+          const agg = byDate.get(date)!;
+          const prev = dailySnaps[i]?.data() ?? {};
+          tx.set(
+            dailyRefs[i]!,
+            {
+              date,
+              bytesSent: (Number(prev.bytesSent) || 0) + agg.bytesSent,
+              bytesReceived: (Number(prev.bytesReceived) || 0) + agg.bytesReceived,
+              activeSeconds: (Number(prev.activeSeconds) || 0) + agg.activeSeconds,
+              domains: mergeTotals(prev.domains as Record<string, DomainTotals> | undefined, agg.domains),
+              processes: mergeTotals(
+                prev.processes as Record<string, DomainTotals> | undefined,
+                agg.processes
+              ),
+              hourly: mergeHourly(
+                prev.hourly as Record<string, { s: number; r: number }> | undefined,
+                agg.hourly
+              ),
+              updatedAt: Timestamp.now(),
+            },
+            { merge: true }
+          );
+        }
+      });
+    } catch (err) {
+      logger.error("report write failed", {
+        deviceId,
+        dates: [...byDate.keys()],
+        domainKeys: [...byDate.values()].reduce((n, a) => n + Object.keys(a.domains).length, 0),
+        err: err instanceof Error ? err.message : String(err),
+      });
+      return fail(res, 500, "internal error writing report");
     }
-
-    await batch.commit();
 
     if (dropped > 0) logger.info("dropped unusable records", { deviceId, dropped });
     res.json({
@@ -346,4 +437,44 @@ export const deleteDevice = functions
     });
 
     return { status: "ok", deviceId };
+  });
+
+/**
+ * Nightly job: delete per-device daily aggregates older than RETENTION_DAYS.
+ * Keeps the dashboard's 30-day window bounded so storage (and reads) don't grow
+ * forever. Safe to re-run -- only documents with date < cutoff are removed.
+ */
+export const purgeOldDaily = functions
+  .region("asia-south1")
+  .runWith({ timeoutSeconds: 540, memory: "512MB", maxInstances: 1 })
+  .pubsub.schedule("every day 03:15")
+  .timeZone(RETENTION_TZ)
+  .onRun(async () => {
+    const cutoff = oldestRetainedDateKey(RETENTION_DAYS, RETENTION_TZ);
+    let deleted = 0;
+    let devicesScanned = 0;
+
+    const devicesSnap = await db.collection("devices").select().get();
+    for (const deviceDoc of devicesSnap.docs) {
+      devicesScanned++;
+      const dailyCol = deviceDoc.ref.collection("daily");
+      // Page through old days; a single PC rarely has more than a few dozen.
+      let page = await dailyCol.where("date", "<", cutoff).limit(400).get();
+      while (!page.empty) {
+        const batch = db.batch();
+        for (const docSnap of page.docs) batch.delete(docSnap.ref);
+        await batch.commit();
+        deleted += page.docs.length;
+        if (page.docs.length < 400) break;
+        page = await dailyCol.where("date", "<", cutoff).limit(400).get();
+      }
+    }
+
+    logger.info("purged daily docs past retention", {
+      cutoff,
+      retentionDays: RETENTION_DAYS,
+      devicesScanned,
+      deleted,
+    });
+    return null;
   });

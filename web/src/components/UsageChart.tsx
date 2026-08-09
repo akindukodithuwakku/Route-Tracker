@@ -5,6 +5,8 @@ import { RANGE_DAYS } from "../lib/types";
 interface Props {
   docs: DailyDoc[];
   range: RangeKey;
+  /** When set, chart shows hourly bars for that single day. */
+  selectedDay?: string | null;
 }
 
 interface Bar {
@@ -13,28 +15,32 @@ interface Bar {
   emphasize: boolean;
 }
 
+function buildHourlyBars(docs: DailyDoc[], emphasizeCurrentHour: boolean): Bar[] {
+  const hours = new Array<number>(24).fill(0);
+  for (const d of docs) {
+    for (const [hour, totals] of Object.entries(d.hourly)) {
+      const h = Number(hour);
+      if (Number.isInteger(h) && h >= 0 && h < 24) {
+        hours[h] = (hours[h] ?? 0) + (totals.s ?? 0) + (totals.r ?? 0);
+      }
+    }
+  }
+  const currentHour = new Date().getHours();
+  return hours.map((value, h) => ({
+    label: h % 6 === 0 ? `${String(h).padStart(2, "0")}:00` : "",
+    value,
+    emphasize: emphasizeCurrentHour && h === currentHour,
+  }));
+}
+
 /**
  * Hour-of-day bars for a single day, one bar per day otherwise. Both come from
  * the same daily documents -- the hourly buckets are stored inside them, so
  * switching granularity costs no extra reads.
  */
-function buildBars(docs: DailyDoc[], range: RangeKey): Bar[] {
-  if (range === "today") {
-    const hours = new Array<number>(24).fill(0);
-    for (const d of docs) {
-      for (const [hour, totals] of Object.entries(d.hourly)) {
-        const h = Number(hour);
-        if (Number.isInteger(h) && h >= 0 && h < 24) {
-          hours[h] = (hours[h] ?? 0) + (totals.s ?? 0) + (totals.r ?? 0);
-        }
-      }
-    }
-    const currentHour = new Date().getHours();
-    return hours.map((value, h) => ({
-      label: h % 6 === 0 ? `${String(h).padStart(2, "0")}:00` : "",
-      value,
-      emphasize: h === currentHour,
-    }));
+function buildBars(docs: DailyDoc[], range: RangeKey, selectedDay?: string | null): Bar[] {
+  if (selectedDay || range === "today") {
+    return buildHourlyBars(docs, !selectedDay || selectedDay === recentDateKeys(1)[0]);
   }
 
   const byDate = new Map<string, number>();
@@ -54,8 +60,8 @@ function buildBars(docs: DailyDoc[], range: RangeKey): Bar[] {
   }));
 }
 
-export function UsageChart({ docs, range }: Props) {
-  const bars = buildBars(docs, range);
+export function UsageChart({ docs, range, selectedDay = null }: Props) {
+  const bars = buildBars(docs, range, selectedDay);
   const max = Math.max(...bars.map((b) => b.value), 1);
   const hasData = bars.some((b) => b.value > 0);
 

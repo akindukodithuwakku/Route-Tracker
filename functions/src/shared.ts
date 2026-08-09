@@ -3,6 +3,12 @@ import { createHash, timingSafeEqual } from "node:crypto";
 export const MAX_RECORDS_PER_BATCH = 2000;
 export const MAX_DOMAIN_LENGTH = 253;
 
+/** Daily usage docs older than this many calendar days are purged automatically. */
+export const RETENTION_DAYS = 30;
+
+/** IANA timezone used for retention cutoff + the nightly purge schedule. */
+export const RETENTION_TZ = "Asia/Colombo";
+
 export function sha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
@@ -68,6 +74,30 @@ export function clampTzOffset(raw: unknown): number {
   const n = typeof raw === "number" ? raw : Number(raw);
   if (!Number.isFinite(n)) return 0;
   return Math.max(-840, Math.min(840, Math.floor(n)));
+}
+
+/** YYYY-MM-DD in `timeZone` for `date` (defaults to now). */
+export function dateKeyInTimeZone(date: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+/**
+ * Oldest daily date key that must still be kept. Docs with `date` strictly
+ * before this key are eligible for purge (keeps `retentionDays` inclusive days).
+ */
+export function oldestRetainedDateKey(
+  retentionDays: number,
+  timeZone: string,
+  now: Date = new Date()
+): string {
+  const days = Math.max(1, Math.floor(retentionDays));
+  const shifted = new Date(now.getTime() - (days - 1) * 24 * 60 * 60 * 1000);
+  return dateKeyInTimeZone(shifted, timeZone);
 }
 
 /**

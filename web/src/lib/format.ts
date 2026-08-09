@@ -39,6 +39,25 @@ export function recentDateKeys(days: number): string[] {
   return keys;
 }
 
+/** Human label for a YYYY-MM-DD key relative to the viewer's local calendar. */
+export function formatDayLabel(dateKey: string): string {
+  const today = localDateKey(new Date());
+  if (dateKey === today) return "Today";
+
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (dateKey === localDateKey(yesterday)) return "Yesterday";
+
+  const [y, m, d] = dateKey.split("-").map(Number);
+  if (!y || !m || !d) return dateKey;
+  const date = new Date(y, m - 1, d);
+  return date.toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
+
 export function formatRelativeTime(date: Date | null): string {
   if (!date) return "never";
   const diffMs = Date.now() - date.getTime();

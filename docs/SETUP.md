@@ -150,6 +150,10 @@ py -m venv .venv
 
 ## Maintenance
 
+- **30-day retention (automatic):** the scheduled Cloud Function
+  `purgeOldDaily` runs every night at 03:15 Asia/Colombo and deletes each
+  device's `daily/{YYYY-MM-DD}` documents older than 30 days. The dashboard
+  day picker matches that window. No manual cleanup is required.
 - **Rename a PC on the dashboard:** click its card; renaming support can be
   wired up via `renameDevice()` in `web/src/lib/useUsage.ts` -- it's exposed
   but not yet bound to a UI control in v1.

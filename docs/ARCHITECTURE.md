@@ -79,6 +79,13 @@ Each report is **2 writes**: the device doc's `lastSeenAt`, and a merge into
 today's daily doc. At a 3-minute interval that's ~4,800 writes/day for 5 PCs,
 inside Firestore's 20K/day free quota.
 
+### Retention
+
+Daily docs are kept for **30 calendar days** (Asia/Colombo). The scheduled
+function `purgeOldDaily` runs every night and deletes `daily/{date}`
+documents with `date` older than that window, so storage stays bounded even
+as PCs keep reporting.
+
 Each dashboard load reads **one doc per PC per day in range** -- 5 docs for
 today, 150 for a 30-day view. The hourly buckets live inside the daily doc,
 so the bandwidth-over-time chart costs no extra reads.
